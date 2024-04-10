@@ -20,7 +20,7 @@ import numpy as np
 
 
 # Hyperparams
-batch_size = 32
+batch_size = 6
 num_workers = 16
 
 
@@ -72,12 +72,12 @@ def train(num_epochs, model, optimizer, train_loader, val_loader, device):
 
 
 if __name__ == "__main__":
-    print(watermark(packages="torch, lightning"), python=True)
+    print(watermark(packages="torch, lightning", python=True))
     print("Torch CUDA available?", torch.cuda.is_available())
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+        [transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
     )
 
     train_set = CIFAR10(root="./data", train=True, download=True, transform=transform)
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     )
 
     val_set = CIFAR10(root="./data", train=False, download=True, transform=transform)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=2)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     classes = (
         "plane",
@@ -109,7 +109,7 @@ if __name__ == "__main__":
 
     start = time.time()
     train(
-        num_epochs=1,
+        num_epochs=3,
         model=model,
         optimizer=optimizer,
         train_loader=train_loader,
