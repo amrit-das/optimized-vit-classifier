@@ -20,35 +20,28 @@ import numpy as np
 
 
 # Hyperparams
-batch_size = 6
+batch_size = 36
 num_workers = 16
+seed = 1
+num_epochs = 15
 
 
-def set_seed(args):
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if args.n_gpu > 0:
-        torch.cuda.manual_seed_all(args.seed)
-
-
-def train(num_epochs, model, optimizer, train_loader, val_loader, device):
+def train(num_epochs, model, optimizer, train_loader, val_loader):
     for epoch in range(num_epochs):
-        train_acc = torchmetrics.Accuracy(task="multiclass", num_classes=10).to(device)
+        train_acc = torchmetrics.Accuracy(task="multiclass", num_classes=10)
         model.train()
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+        for batch_idx, batch in enumerate(train_loader):
+            inputs, targets = batch
 
             preds = model(inputs)
             loss = cross_entropy(preds, targets)
 
             optimizer.zero_grad()
-            loss.backward()
+            fabric.backward(loss)
 
             optimizer.step()
 
-            if not batch_idx % 300:
+            if not batch_idx % 50:
                 print(f"Epoch: {epoch+1:04d}/{num_epochs:04d} | Batch {batch_idx:04d}/{len(train_loader):04d} | Loss: {loss:.4f}")
 
             model.eval()
@@ -58,12 +51,11 @@ def train(num_epochs, model, optimizer, train_loader, val_loader, device):
         
         # Log results
         with torch.no_grad():
-            val_acc = torchmetrics.Accuracy(task="multiclass", num_classes=10).to(device)
+            val_acc = torchmetrics.Accuracy(task="multiclass", num_classes=10)
 
-            for (features, targets) in val_loader:
-                features = features.to(device)
-                targets = targets.to(device)
-                outputs = model(features)
+            for batch in val_loader:
+                inputs, targets = batch
+                outputs = model(inputs)
                 predicted_labels = torch.argmax(outputs, 1)
                 val_acc.update(predicted_labels, targets)
 
@@ -74,7 +66,9 @@ def train(num_epochs, model, optimizer, train_loader, val_loader, device):
 if __name__ == "__main__":
     print(watermark(packages="torch, lightning", python=True))
     print("Torch CUDA available?", torch.cuda.is_available())
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    fabric = Fabric(accelerator="cuda", devices=1, precision="bf16-true")
+    fabric.launch()
+    fabric.seed_everything(seed + fabric.global_rank)
 
     transform = transforms.Compose(
         [transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
@@ -88,6 +82,9 @@ if __name__ == "__main__":
     val_set = CIFAR10(root="./data", train=False, download=True, transform=transform)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
+    train_loader = fabric.setup_dataloaders(train_loader)
+    val_loader = fabric.setup_dataloaders(val_loader)
+    
     classes = (
         "plane",
         "car",
@@ -101,20 +98,23 @@ if __name__ == "__main__":
         "truck",
     )
 
-    model = vit_l_16(weights=ViT_L_16_Weights.IMAGENET1K_V1)
+    with fabric.init_module():
+        model = vit_l_16(weights=ViT_L_16_Weights.IMAGENET1K_V1)
     model.heads.head = torch.nn.Linear(in_features=1024, out_features=len(classes))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    num_steps = num_epochs * len(train_loader)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps)
 
-    model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)
+    model, optimizer = fabric.setup(model, optimizer)    
 
     start = time.time()
     train(
-        num_epochs=3,
+        num_epochs=num_epochs,
         model=model,
         optimizer=optimizer,
         train_loader=train_loader,
         val_loader=val_loader,
-        device=device
+        device="cuda"
     )
 
     end = time.time()
